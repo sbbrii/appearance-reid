@@ -12,13 +12,14 @@ import argparse
 import logging
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import cv2
 import numpy as np
 import yaml
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+logging.getLogger("faiss.loader").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 # Colour palette for track_id annotation
@@ -61,33 +62,72 @@ def _draw_overlay(
     attr_info: dict,
     top_matches: list,
     cfg: dict,
+    identity_res: Optional[Any] = None,
 ) -> None:
-    """Draw bbox, track_id, quality bar, color labels, attributes, top matches."""
+    """Draw bbox, persistent identity_id, track_id, quality bar, color labels, attributes, top matches."""
     x1, y1, x2, y2 = det["bbox"]
     tid = det["track_id"]
-    col = _track_colour(tid)
+
+    # Determine identity label and display color
+    wait_m = cfg.get("identity", {}).get("wait_frames_m", 6)
+    if identity_res is not None and identity_res.identity_id is not None:
+        iid = identity_res.identity_id
+        col = _track_colour(iid)
+        id_text = f"ID:{iid}"
+    elif identity_res is not None and identity_res.status == "pending":
+        col = (180, 180, 180)
+        id_text = f"ID:? ({identity_res.frame_count}/{wait_m})"
+    else:
+        col = _track_colour(tid)
+        id_text = f"ID:{tid}"
 
     cv2.rectangle(frame, (x1, y1), (x2, y2), col, 2)
 
-    label = f"ID:{tid}"
-    cv2.putText(frame, label, (x1, y1 - 10),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.55, col, 2, cv2.LINE_AA)
+    # Large ID label
+    label_y = max(20, y1 - 10)
+    cv2.putText(frame, id_text, (x1, label_y),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.65, col, 2, cv2.LINE_AA)
+
+    # Small T:track_id label
+    id_size = cv2.getTextSize(id_text, cv2.FONT_HERSHEY_SIMPLEX, 0.65, 2)[0]
+    tid_label = f"T:{tid}"
+    cv2.putText(frame, tid_label, (x1 + id_size[0] + 8, label_y),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.40, (180, 180, 180), 1, cv2.LINE_AA)
+
+    # Suggestion text (e.g. suggest-only or ambiguous match)
+    if identity_res is not None and identity_res.suggestion:
+        sug = identity_res.suggestion
+        sug_text = f"possible: ID {sug['candidate_id']} ({sug['score']:.2f})"
+        cv2.putText(frame, sug_text, (x1, max(36, label_y - 18)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 215, 255), 1, cv2.LINE_AA)
 
     if cfg["pipeline"].get("draw_quality_bar") and quality_info:
         _draw_quality_bar(frame, x1, y1, x2, quality_info.get("overall", 0.5))
 
-    # Color labels
+    # Color labels below bbox
+    curr_y = y2 + 14
     if cfg["pipeline"].get("draw_color_labels") and color_info:
         txt = f"U:{color_info.get('upper','?')}  L:{color_info.get('lower','?')}"
-        cv2.putText(frame, txt, (x1, y2 + 14),
+        cv2.putText(frame, txt, (x1, curr_y),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1, cv2.LINE_AA)
+        curr_y += 14
 
-    # Top gallery matches
-    for rank, m in enumerate(top_matches[: cfg["pipeline"].get("top_k_display", 3)]):
-        score = m.get("score", 0)
-        match_tid = m["record"].track_id
-        m_txt = f"#{rank+1} ID:{match_tid} {score:.2f}"
-        cv2.putText(frame, m_txt, (x1, y2 + 28 + rank * 13),
+    # Top candidate matches with sub-scores
+    candidates = identity_res.candidates if (identity_res and identity_res.candidates) else top_matches
+    for rank, m in enumerate(candidates[: cfg["pipeline"].get("top_k_display", 3)]):
+        if "candidate_id" in m:
+            cand_id = m["candidate_id"]
+            f_score = m.get("score", 0.0)
+            e_score = m.get("emb_score", 0.0)
+            c_score = m.get("color_score", 0.0)
+            a_score = m.get("attr_score", 0.0)
+            m_txt = f"#{rank+1} ID:{cand_id} F:{f_score:.2f} (E:{e_score:.2f} C:{c_score:.2f} A:{a_score:.2f})"
+        else:
+            score = m.get("score", 0.0)
+            rec = m.get("record")
+            match_tid = rec.track_id if rec else "?"
+            m_txt = f"#{rank+1} ID:{match_tid} {score:.2f}"
+        cv2.putText(frame, m_txt, (x1, curr_y + rank * 13),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.35, (180, 255, 180), 1, cv2.LINE_AA)
 
 
@@ -101,13 +141,16 @@ class Pipeline:
         Full default.yaml config as a Python dict.
     """
 
-    def __init__(self, cfg: dict) -> None:
+    def __init__(self, cfg: dict, score_log_path: Optional[str] = None) -> None:
         self.cfg = cfg
+        self.score_log_path = score_log_path
         self._extractor = None
         self._tracker = None
         self._gallery = None
         self._attr_model = None
         self._attr_loaded = False
+        self._identity = None
+        self._seen_tracks: set[int] = set()
 
     def _lazy_init(self, camera_id: str = "cam0") -> None:
         """Initialise all components (deferred to avoid import cost at import time)."""
@@ -117,11 +160,13 @@ class Pipeline:
         from src.detect_track import DetectionTracker
         from src.gallery import GalleryIndex
         from src.attributes import AttributeInference
+        from src.identity import IdentityManager
 
         logger.info("Initialising pipeline components...")
         self._extractor = EmbeddingExtractor(self.cfg["model"])
         self._tracker = DetectionTracker(self.cfg["detection"], camera_id=camera_id)
         self._gallery = GalleryIndex(self.cfg["gallery"], embedding_dim=self.cfg["model"]["embedding_dim"])
+        self._identity = IdentityManager(self.cfg, score_log_path=self.score_log_path)
         self._attr_model = AttributeInference(self.cfg["attributes"])
         try:
             self._attr_model.load()
@@ -154,6 +199,7 @@ class Pipeline:
         crops_bgr = [d["crop_bgr"] for d in detections]
         embeddings = self._extractor.extract_batch(crops_bgr) if crops_bgr else []
 
+        visible_track_ids = {d["track_id"] for d in detections}
         results = []
         for i, det in enumerate(detections):
             emb = embeddings[i] if len(embeddings) > i else None
@@ -167,7 +213,8 @@ class Pipeline:
                 try:
                     attr_out = self._attr_model.predict(det["crop_bgr"])
                     attr_dict_probs = attr_out["probs"]
-                    upper_xy, lower_xy = attr_out["coords"]
+                    coords = attr_out.get("coords")
+                    upper_xy, lower_xy = coords if coords is not None else (None, None)
                     color_dict = extract_colors(det["crop_bgr"], upper_xy, lower_xy, self.cfg["color"])
                 except Exception as exc:
                     logger.debug("Attribute inference error: %s", exc)
@@ -183,23 +230,28 @@ class Pipeline:
                 quality=QualityInfo(**q_dict),
             )
 
+            id_res = self._identity.process_track(record, visible_track_ids)
             candidates = self._gallery.search(record)
             ranked = rerank(candidates, record, self.cfg["fusion"])
             self._gallery.add(record)
+
             results.append({
                 "record": record,
                 "candidates": ranked,
                 "detection": det,
+                "identity": id_res,
             })
         return results
+        
 
-    def run(self, source, camera_id: str = "cam0") -> None:
+    def run(self, source, camera_id: str = "cam0", duration: float = 0.0) -> None:
         """
         Run the pipeline on a video source.
 
         Parameters
         ----------
         source : int | str   webcam index or video file path.
+        duration : float     Max runtime in seconds (0 for infinite).
         """
         import cv2
         from src.detect_track import open_source
@@ -218,9 +270,13 @@ class Pipeline:
         display = bool(self.cfg["pipeline"].get("display", True))
 
         logger.info("Pipeline running.  Press Q to quit.")
+        run_start_t = time.perf_counter()
 
         try:
             while True:
+                if duration > 0 and (time.perf_counter() - run_start_t) >= duration:
+                    logger.info("Target duration of %.1fs reached.", duration)
+                    break
                 t0 = time.perf_counter()
                 ret, frame = cap.read()
                 if not ret:
@@ -233,6 +289,7 @@ class Pipeline:
                 crops_bgr = [d["crop_bgr"] for d in detections]
                 embeddings = self._extractor.extract_batch(crops_bgr) if crops_bgr else []
 
+                visible_track_ids = {d["track_id"] for d in detections}
                 for i, det in enumerate(detections):
                     emb = embeddings[i] if len(embeddings) > i else None
                     if emb is None:
@@ -249,7 +306,8 @@ class Pipeline:
                         try:
                             attr_out = self._attr_model.predict(det["crop_bgr"])
                             attr_dict_probs = attr_out["probs"]
-                            upper_xy, lower_xy = attr_out["coords"]
+                            coords = attr_out.get("coords")
+                            upper_xy, lower_xy = coords if coords is not None else (None, None)
                             color_dict = extract_colors(
                                 det["crop_bgr"], upper_xy, lower_xy, self.cfg["color"]
                             )
@@ -268,12 +326,8 @@ class Pipeline:
                         quality=QualityInfo(**q_dict),
                     )
 
-                    # -- Gallery search + fusion re-rank --
-                    candidates = self._gallery.search(record)
-                    ranked = rerank(candidates, record, self.cfg["fusion"])
-
-                    # Add current observation to gallery
-                    self._gallery.add(record)
+                    # -- Persistent Identity Resolution --
+                    id_res = self._identity.process_track(record, visible_track_ids)
 
                     # -- Draw --
                     if display:
@@ -282,8 +336,9 @@ class Pipeline:
                             quality_info=q_dict,
                             color_info=color_dict,
                             attr_info=attr_dict_probs,
-                            top_matches=ranked,
+                            top_matches=id_res.candidates,
                             cfg=self.cfg,
+                            identity_res=id_res,
                         )
 
                 # Periodic gallery TTL purge
@@ -313,6 +368,8 @@ class Pipeline:
 
         finally:
             cap.release()
+            if self._identity and self._identity.score_logger:
+                self._identity.score_logger.close()
             if display:
                 cv2.destroyAllWindows()
 
@@ -330,14 +387,23 @@ def main() -> None:
                         help="Webcam index (int) or video file path")
     parser.add_argument("--config", default="configs/default.yaml")
     parser.add_argument("--camera_id", default="cam0")
+    parser.add_argument("--duration", type=float, default=0.0,
+                        help="Max runtime in seconds (0 for infinite)")
+    parser.add_argument("--log-scores", nargs="?", const="scores_log.csv", default=None,
+                        help="Write linking scores and decisions to CSV file (default: scores_log.csv)")
+    parser.add_argument("--debug", action="store_true", help="Enable debug logging")
     args = parser.parse_args()
+
+    if args.debug:
+        logging.basicConfig(level=logging.DEBUG)
+        logging.getLogger().setLevel(logging.DEBUG)
 
     with open(args.config, "r") as f:
         cfg = yaml.safe_load(f)
 
     source = int(args.source) if args.source.isdigit() else args.source
-    pipeline = Pipeline(cfg)
-    pipeline.run(source=source, camera_id=args.camera_id)
+    pipeline = Pipeline(cfg, score_log_path=args.log_scores)
+    pipeline.run(source=source, camera_id=args.camera_id, duration=args.duration)
 
 
 if __name__ == "__main__":

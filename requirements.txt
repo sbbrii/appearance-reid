@@ -1,53 +1,38 @@
-# SAFEPASS -- Appearance + Quality-Aware Fusion Module
-# Python 3.14  |  GPU: RTX 2050, CUDA 12.9 (use cu128 wheel)
-#
-# Install PyTorch first (GPU):
+# SAFEPASS -- Direct Dependencies
+# Tested on Python 3.10 - 3.14 (Windows 11 x64, CPU and NVIDIA GPU)
+# For GPU acceleration:
 #   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
 # Then:
 #   pip install -r requirements.txt
 
-# Core ML
-# torch and torchvision installed separately with CUDA wheel (see above)
-torchvision>=0.16          # must match torch version
+# Computer Vision & Deep Learning
+torch>=2.0.0
+torchvision>=0.16.0
+ultralytics==8.4.185
+openvino==2026.4.1
+opencv-python==5.0.0.93
+pillow==12.3.0
 
-# Re-ID backbone (Python 3.14 compatible, no Cython needed)
-torchreid==0.2.5
+# Re-ID Model Backbone (Pure-Python distribution of Kaiyang Zhou's deep-person-reid)
+torchreid @ git+https://github.com/goksenin-uav/torchreid-pip.git@8b44b18c1da7729f5448f6ba8a7b6cc5ad7ce267
 
-# Detection + tracking
-ultralytics>=8.2,<9        # YOLOv8 + ByteTrack built in
+# Vector Search & Machine Learning
+faiss-cpu==1.15.1
+numpy==2.5.2
+scikit-learn==1.9.1
+scipy==1.18.1
+tensorboard==2.21.0
 
-# OpenVINO runtime (CPU inference for attribute model)
-openvino>=2024.0
+# Configuration & Utilities
+PyYAML==6.0.3
+requests==2.34.2
+gdown==6.4.2
+tqdm==4.70.1
 
-# Vector search
-faiss-cpu
-
-# Computer vision
-opencv-python>=4.9
-
-# Numerical
-numpy>=1.24,<2.0           # numpy 2.x may break torchreid internals
-
-# ML utilities
-scikit-learn>=1.4          # logistic regression for learned fusion
-
-# Config
-PyYAML>=6.0
-
-# Evaluation + plotting
-matplotlib>=3.8
-pandas>=2.0
-
-# HTTP download (model files)
-requests>=2.31
+# Evaluation & Plotting
+matplotlib==3.11.2
+pandas==3.1.0
 
 # Testing
-pytest>=7.4
-pytest-cov
-
-# Progress bars
-tqdm>=4.66
-
-# Serialisation
-pillow>=10.0
-scipy>=1.12
+pytest==9.1.1
+pytest-cov==7.1.0

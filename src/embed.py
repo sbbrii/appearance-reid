@@ -13,6 +13,7 @@ GPU policy (RTX 2050, 4 GB VRAM):
 from __future__ import annotations
 
 import logging
+import pathlib
 import warnings
 from typing import Optional
 
@@ -74,10 +75,33 @@ class EmbeddingExtractor:
             self.device, self.fp16, self.batch_size,
         )
 
+        raw_weights = cfg.get("weights_path")
+        if raw_weights in ("imagenet", "none", "None", ""):
+            use_pretrained = (raw_weights == "imagenet") or cfg.get("osnet_pretrained", True)
+            weights_path = None
+        elif raw_weights is None:
+            candidate = pathlib.Path("models/osnet_x1_0_market1501.pth")
+            if candidate.exists():
+                weights_path = str(candidate)
+                use_pretrained = False
+            else:
+                weights_path = None
+                use_pretrained = cfg.get("osnet_pretrained", True)
+        else:
+            weights_path = raw_weights
+            use_pretrained = False
+
         model = _build_osnet(
             model_name=self.model_name,
-            pretrained=cfg.get("osnet_pretrained", True),
+            pretrained=use_pretrained,
         )
+        if weights_path and pathlib.Path(weights_path).exists():
+            try:
+                from torchreid.reid.utils.torchtools import load_pretrained_weights
+            except ImportError:
+                from pyppbox_torchreid.utils.torchtools import load_pretrained_weights
+            load_pretrained_weights(model, weights_path)
+
         self.model = model.to(self.device).eval()
 
         # Transform: resize -> tensor -> ImageNet normalise.
@@ -141,7 +165,7 @@ class EmbeddingExtractor:
         try:
             with torch.no_grad():
                 if use_fp16:
-                    with torch.cuda.amp.autocast():
+                    with torch.amp.autocast('cuda'):
                         feats = self.model(batch)
                 else:
                     feats = self.model(batch)

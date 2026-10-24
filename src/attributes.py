@@ -84,22 +84,21 @@ class AttributeInference:
         logger.info("AttributeInference: %d output(s) found", len(outputs))
         attr_idx = coord_idx = None
         coord_2d_indices = []
-        for out in outputs:
+        for i, out in enumerate(outputs):
             shape = tuple(out.partial_shape.to_shape())
             flat_c = shape[1] if len(shape) >= 2 else shape[0]
-            logger.info("  output idx=%d  name=%s  shape=%s", out.index, out.any_name, shape)
+            logger.info("  output idx=%d  name=%s  shape=%s", i, out.any_name, shape)
             if flat_c == _EXPECTED_ATTR_DIM:
-                attr_idx = out.index
+                attr_idx = i
             elif flat_c == _EXPECTED_COORD_DIM:
-                coord_idx = out.index
+                coord_idx = i
             elif flat_c == 2:
-                coord_2d_indices.append(out.index)
+                coord_2d_indices.append(i)
 
-        if attr_idx is None or (coord_idx is None and len(coord_2d_indices) != 2):
+        if attr_idx is None:
             shapes = [(o.any_name, tuple(o.partial_shape.to_shape())) for o in outputs]
             raise RuntimeError(
-                f"Could not identify attribute (dim={_EXPECTED_ATTR_DIM}) or "
-                f"coordinate (dim={_EXPECTED_COORD_DIM} or 2x2) outputs.\n"
+                f"Could not identify attribute output (dim={_EXPECTED_ATTR_DIM}).\n"
                 f"Actual outputs: {shapes}\n"
                 f"Stopping -- verify model identity."
             )
@@ -108,7 +107,7 @@ class AttributeInference:
         self._coord_out_idx = coord_idx
         self._coord_2d_indices = coord_2d_indices
         logger.info(
-            "AttributeInference ready: attr_out_idx=%d  coord_out_idx=%s  coord_2d=%s",
+            "AttributeInference ready: attr_out_idx=%s  coord_out_idx=%s  coord_2d=%s",
             attr_idx, coord_idx, coord_2d_indices,
         )
         self._model_ready = True
@@ -122,7 +121,7 @@ class AttributeInference:
         dict:
           probs  : dict[str, float]  attribute probabilities in [0,1]
           bools  : dict[str, bool]   thresholded booleans
-          coords : tuple((x_top, y_top), (x_bot, y_bot)) in [0,1]
+          coords : tuple((x_top, y_top), (x_bot, y_bot)) in [0,1], or None if missing
         """
         if not self._model_ready:
             raise RuntimeError("Call AttributeInference.load() first.")
@@ -131,21 +130,31 @@ class AttributeInference:
         self._infer_req.infer({0: tensor})
 
         attr_raw = self._infer_req.get_output_tensor(self._attr_out_idx).data.flatten()
+        coords = None
         if self._coord_out_idx is not None:
             coord_raw = self._infer_req.get_output_tensor(self._coord_out_idx).data.flatten()
-            x_top, y_top, x_bot, y_bot = coord_raw[:4]
-        else:
+            if len(coord_raw) >= 4:
+                x_top, y_top, x_bot, y_bot = coord_raw[:4]
+                coords = (
+                    (float(np.clip(x_top, 0.0, 1.0)), float(np.clip(y_top, 0.0, 1.0))),
+                    (float(np.clip(x_bot, 0.0, 1.0)), float(np.clip(y_bot, 0.0, 1.0))),
+                )
+        elif len(self._coord_2d_indices) == 2:
             top_raw = self._infer_req.get_output_tensor(self._coord_2d_indices[0]).data.flatten()
             bot_raw = self._infer_req.get_output_tensor(self._coord_2d_indices[1]).data.flatten()
-            x_top, y_top = top_raw[:2]
-            x_bot, y_bot = bot_raw[:2]
+            if len(top_raw) >= 2 and len(bot_raw) >= 2:
+                x_top, y_top = top_raw[:2]
+                x_bot, y_bot = bot_raw[:2]
+                coords = (
+                    (float(np.clip(x_top, 0.0, 1.0)), float(np.clip(y_top, 0.0, 1.0))),
+                    (float(np.clip(x_bot, 0.0, 1.0)), float(np.clip(y_bot, 0.0, 1.0))),
+                )
 
         probs = {name: float(attr_raw[i]) for i, name in enumerate(self.attr_names)}
         bools = {
             name: float(attr_raw[i]) >= self.thresholds.get(name, 0.5)
             for i, name in enumerate(self.attr_names)
         }
-        coords = ((float(x_top), float(y_top)), (float(x_bot), float(y_bot)))
         return {"probs": probs, "bools": bools, "coords": coords}
 
     def _preprocess(self, crop_bgr: np.ndarray) -> np.ndarray:

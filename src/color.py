@@ -10,8 +10,18 @@ If confidence < threshold, 'unknown' is returned instead of a label.
 """
 from __future__ import annotations
 
+import logging
+from typing import Optional, Tuple
+
 import cv2
 import numpy as np
+
+logger = logging.getLogger(__name__)
+
+# Fallback sampling points (normalized coordinates in [0, 1]).
+# Used when model-predicted coordinates are missing or invalid.
+FALLBACK_UPPER_XY: Tuple[float, float] = (0.50, 0.33)
+FALLBACK_LOWER_XY: Tuple[float, float] = (0.50, 0.70)
 
 # Fixed label set and their Lab centroids.
 # Centroids measured from representative patches; adjust per deployment.
@@ -38,6 +48,19 @@ _LAB_CENTROIDS = np.array([
 ], dtype=np.float32)
 
 
+def _is_valid_coord(pt: object) -> bool:
+    """Check if pt is a 2-element tuple/list of finite numbers."""
+    if pt is None or not isinstance(pt, (tuple, list)) or len(pt) < 2:
+        return False
+    try:
+        x, y = float(pt[0]), float(pt[1])
+        if np.isnan(x) or np.isnan(y) or np.isinf(x) or np.isinf(y):
+            return False
+        return True
+    except (TypeError, ValueError):
+        return False
+
+
 def _sample_lab_patch(
     crop_bgr: np.ndarray,
     x_norm: float,
@@ -45,13 +68,22 @@ def _sample_lab_patch(
     patch_size: int,
 ) -> np.ndarray:
     """
-    Sample a patch around (x_norm, y_norm) and return median Lab colour.
+    Sample a patch around normalized (x_norm, y_norm) and return median Lab colour.
 
+    Scales from normalized coords to crop pixels and clips to valid pixel bounds.
     Returns float32 array of shape (3,) in standard Lab space.
     """
     h, w = crop_bgr.shape[:2]
-    cx = int(round(x_norm * w))
-    cy = int(round(y_norm * h))
+    if h == 0 or w == 0:
+        return np.array([50.0, 0.0, 0.0], dtype=np.float32)
+
+    # Clip normalized coords to [0.0, 1.0]
+    x_c = float(np.clip(x_norm, 0.0, 1.0))
+    y_c = float(np.clip(y_norm, 0.0, 1.0))
+
+    # Scale to crop pixel coordinates, clipped to valid pixel indices
+    cx = int(np.clip(round(x_c * (w - 1)), 0, max(0, w - 1)))
+    cy = int(np.clip(round(y_c * (h - 1)), 0, max(0, h - 1)))
     half = patch_size // 2
 
     x1 = max(0, cx - half); x2 = min(w, cx + half + 1)
@@ -96,8 +128,8 @@ def classify_color(
     label : str  ('unknown' if confidence < threshold)
     confidence : float in [0, 1]
     """
-    patch_size = int(cfg["patch_size"])
-    conf_thresh = float(cfg["confidence_threshold"])
+    patch_size = int(cfg.get("patch_size", 7))
+    conf_thresh = float(cfg.get("confidence_threshold", 0.25))
 
     lab = _sample_lab_patch(crop_bgr, x_norm, y_norm, patch_size)
     label, dist, margin = _nearest_centroid(lab)
@@ -113,9 +145,9 @@ def classify_color(
 
 def extract_colors(
     crop_bgr: np.ndarray,
-    upper_xy: tuple,
-    lower_xy: tuple,
-    cfg: dict,
+    upper_xy: tuple | list | None = None,
+    lower_xy: tuple | list | None = None,
+    cfg: dict | None = None,
 ) -> dict:
     """
     Extract upper and lower body color labels.
@@ -123,17 +155,35 @@ def extract_colors(
     Parameters
     ----------
     crop_bgr  : person crop (BGR).
-    upper_xy  : (x_norm, y_norm) for upper body.
-    lower_xy  : (x_norm, y_norm) for lower body.
-    cfg       : ``color`` section of default.yaml.
+    upper_xy  : (x_norm, y_norm) for upper body (or None for fallback).
+    lower_xy  : (x_norm, y_norm) for lower body (or None for fallback).
+    cfg       : ``color`` section of default.yaml (or None for defaults).
 
     Returns
     -------
-    dict: {upper, upper_conf, lower, lower_conf}
+    dict: {upper, upper_conf, lower, lower_conf, sampling_path}
     """
-    u_label, u_conf = classify_color(crop_bgr, *upper_xy, cfg)
-    l_label, l_conf = classify_color(crop_bgr, *lower_xy, cfg)
+    if cfg is None:
+        cfg = {"patch_size": 7, "confidence_threshold": 0.25}
+
+    if _is_valid_coord(upper_xy) and _is_valid_coord(lower_xy):
+        sampling_path = "model points"
+        u_pt = (float(np.clip(upper_xy[0], 0.0, 1.0)), float(np.clip(upper_xy[1], 0.0, 1.0)))
+        l_pt = (float(np.clip(lower_xy[0], 0.0, 1.0)), float(np.clip(lower_xy[1], 0.0, 1.0)))
+    else:
+        sampling_path = "fallback"
+        u_pt = FALLBACK_UPPER_XY
+        l_pt = FALLBACK_LOWER_XY
+
+    if logger.isEnabledFor(logging.DEBUG):
+        msg = f"[DEBUG] Color sampling path: {sampling_path} (upper={u_pt}, lower={l_pt})"
+        logger.debug(msg)
+        print(msg)
+
+    u_label, u_conf = classify_color(crop_bgr, *u_pt, cfg)
+    l_label, l_conf = classify_color(crop_bgr, *l_pt, cfg)
     return {
         "upper": u_label, "upper_conf": u_conf,
         "lower": l_label, "lower_conf": l_conf,
+        "sampling_path": sampling_path,
     }

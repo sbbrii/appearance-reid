@@ -1,28 +1,82 @@
+# Environments & Dependencies
 venv/
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
+.venv/
+env/
 *.egg-info/
 dist/
 build/
 
-# Model files (large binaries, download separately)
-models/
+# Byte-compiled / cache files
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
 
-# Reference clone (temporary, deleted after M2)
+# IDE & Editor configs
+.idea/
+.vscode/
+.gemini/
+*.swp
+*.swo
+
+# Temporary & Reference clones
 _reference/
 
-# Dataset (user provides)
-data/
+# Datasets (Market-1501, synthetic test sets)
+data/*
+!data/.gitkeep
+!data/README.md
 
-# Evaluation outputs
-results/
+# Cached features, embeddings, and arrays
 cache/
 *.npz
 
-# Learned fusion artefacts
-*.pkl
+# Runtime & Evaluation Outputs
+results/*
+!results/.gitkeep
+!results/README.md
 
-# Debug crops
+# Logs & Metrics (webcam smoke scores, sessions)
+*.log
+*.csv
+smoke_scores.csv
+scores_log.csv
+session*_scores.csv
+
+# Media & Video files
+*.mp4
+*.avi
+*.mkv
+*.mov
 debug_crops/
+saved_frames/
+crops/
+
+# Ultralytics runs & models
+runs/
+*.pt
+
+# Model Weights & Artefacts (download via scripts/download_models.py)
+models/*
+!models/.gitkeep
+!models/README.md
+*.pth
+*.pkl
+*.bin
+*.xml
+
+# Environment variables & secrets
+.env
+.env.*
+*.key
+*.token
+
+# OS metadata
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.DS_Store
+*.corrupt

@@ -111,16 +111,28 @@ def _aggregate_quality(q_q: float, q_g: float, method: str) -> float:
 
 def _build_learned_features(q, g, emb_sim, color_sim, attr_sim, cfg) -> list:
     """Build feature vector for the learned fusion model."""
+    q_q = float(q.quality.overall)
+    q_g = float(g.quality.overall)
+    q_min = min(q_q, q_g)
+    q_prod = math.sqrt(max(q_q * q_g, 0.0))
+    inv_q = 1.0 - q_min
+
     feature_map = {
-        "q_quality_overall": q.quality.overall,
-        "g_quality_overall": g.quality.overall,
-        "q_blur": q.quality.blur,
-        "g_blur": g.quality.blur,
-        "q_visibility": q.quality.visibility,
-        "g_visibility": g.quality.visibility,
-        "emb_sim": emb_sim,
-        "color_sim": color_sim,
-        "attr_sim": attr_sim,
+        "q_quality_overall": q_q,
+        "g_quality_overall": q_g,
+        "q_blur": float(q.quality.blur),
+        "g_blur": float(g.quality.blur),
+        "q_visibility": float(q.quality.visibility),
+        "g_visibility": float(g.quality.visibility),
+        "emb_sim": float(emb_sim),
+        "color_sim": float(color_sim),
+        "attr_sim": float(attr_sim),
+        "q_min": q_min,
+        "q_prod": q_prod,
+        "emb_sim_x_q_min": float(emb_sim * q_min),
+        "emb_sim_x_q_prod": float(emb_sim * q_prod),
+        "color_sim_x_inv_q": float(color_sim * inv_q),
+        "attr_sim_x_inv_q": float(attr_sim * inv_q),
     }
     return [feature_map[f] for f in cfg["learned"]["features"]]
 

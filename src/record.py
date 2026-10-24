@@ -21,6 +21,7 @@ class ColorInfo:
     lower: str = "unknown"
     upper_conf: float = 0.0
     lower_conf: float = 0.0
+    sampling_path: str = "fallback"
 
 
 @dataclass

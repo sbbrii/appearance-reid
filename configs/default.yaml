@@ -4,6 +4,7 @@
 model:
   osnet_name: osnet_x1_0
   osnet_pretrained: true
+  weights_path: models/osnet_x1_0_market1501.pth
   embedding_dim: 512
   image_size: [256, 128]
   fp16: true
@@ -71,15 +72,17 @@ fusion:
   learned:
     model_path: models/fusion_lr.pkl
     features:
-      - q_quality_overall
-      - g_quality_overall
-      - q_blur
-      - g_blur
-      - q_visibility
-      - g_visibility
       - emb_sim
+      - q_min
+      - q_prod
+      - q_blur
+      - q_visibility
       - color_sim
       - attr_sim
+      - emb_sim_x_q_min
+      - emb_sim_x_q_prod
+      - color_sim_x_inv_q
+      - attr_sim_x_inv_q
 
 detection:
   yolo_model: yolov8n.pt
@@ -111,3 +114,13 @@ pipeline:
   draw_quality_bar: true
   draw_attributes: true
   draw_color_labels: true
+
+identity:
+  link_threshold: 0.70
+  wait_frames_m: 6
+  max_embeddings_n: 10
+  quality_threshold: 0.40
+  temporal_spacing_s: 1.0
+  margin: 0.05
+  match_metric: mean_top_k
+  match_top_k: 3

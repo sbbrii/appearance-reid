@@ -14,11 +14,12 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any
+from typing import Any, Optional
 
 import numpy as np
 
 logger = logging.getLogger(__name__)
+logging.getLogger("faiss.loader").setLevel(logging.WARNING)
 
 
 class SearchResult(dict):
