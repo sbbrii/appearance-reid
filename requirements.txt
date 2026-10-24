@@ -1,0 +1,53 @@
+# SAFEPASS -- Appearance + Quality-Aware Fusion Module
+# Python 3.14  |  GPU: RTX 2050, CUDA 12.9 (use cu128 wheel)
+#
+# Install PyTorch first (GPU):
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+# Then:
+#   pip install -r requirements.txt
+
+# Core ML
+# torch and torchvision installed separately with CUDA wheel (see above)
+torchvision>=0.16          # must match torch version
+
+# Re-ID backbone (Python 3.14 compatible, no Cython needed)
+torchreid==0.2.5
+
+# Detection + tracking
+ultralytics>=8.2,<9        # YOLOv8 + ByteTrack built in
+
+# OpenVINO runtime (CPU inference for attribute model)
+openvino>=2024.0
+
+# Vector search
+faiss-cpu
+
+# Computer vision
+opencv-python>=4.9
+
+# Numerical
+numpy>=1.24,<2.0           # numpy 2.x may break torchreid internals
+
+# ML utilities
+scikit-learn>=1.4          # logistic regression for learned fusion
+
+# Config
+PyYAML>=6.0
+
+# Evaluation + plotting
+matplotlib>=3.8
+pandas>=2.0
+
+# HTTP download (model files)
+requests>=2.31
+
+# Testing
+pytest>=7.4
+pytest-cov
+
+# Progress bars
+tqdm>=4.66
+
+# Serialisation
+pillow>=10.0
+scipy>=1.12

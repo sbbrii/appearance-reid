@@ -1,0 +1,28 @@
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+
+# Model files (large binaries, download separately)
+models/
+
+# Reference clone (temporary, deleted after M2)
+_reference/
+
+# Dataset (user provides)
+data/
+
+# Evaluation outputs
+results/
+cache/
+*.npz
+
+# Learned fusion artefacts
+*.pkl
+
+# Debug crops
+debug_crops/

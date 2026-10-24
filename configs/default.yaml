@@ -1,0 +1,113 @@
+# SAFEPASS -- default configuration
+# All tunable parameters live here. No magic numbers in src/.
+
+model:
+  osnet_name: osnet_x1_0
+  osnet_pretrained: true
+  embedding_dim: 512
+  image_size: [256, 128]
+  fp16: true
+  batch_size: 32
+  batch_size_max: 64
+
+quality:
+  blur_calibration:
+    p5: 20.0
+    p95: 400.0
+  visibility_min_aspect: 1.5
+  visibility_edge_weight: 0.5
+  size_ref_height_px: 128
+  size_min_height_px: 32
+  weights:
+    blur: 0.40
+    visibility: 0.35
+    size: 0.25
+
+color:
+  patch_size: 7
+  confidence_threshold: 0.25
+  color_space: lab
+
+attributes:
+  model_xml: models/FP32/person-attributes-recognition-crossroad-0230.xml
+  input_height: 160
+  input_width: 80
+  attribute_names:
+    - is_male
+    - has_bag
+    - has_backpack
+    - has_hat
+    - has_longsleeves
+    - has_longpants
+    - has_longhair
+    - has_coat_jacket
+  thresholds:
+    is_male: 0.5
+    has_bag: 0.5
+    has_backpack: 0.5
+    has_hat: 0.5
+    has_longsleeves: 0.5
+    has_longpants: 0.5
+    has_longhair: 0.5
+    has_coat_jacket: 0.5
+
+gallery:
+  top_k_faiss: 50
+  top_k_output: 10
+  ttl_seconds: 86400
+
+fusion:
+  method: adaptive_rule
+  fixed_weights:
+    embedding: 0.60
+    color: 0.20
+    attributes: 0.20
+  adaptive:
+    quality_aggregation: min
+    temperature: 2.0
+    mismatch_penalty: 0.15
+    mismatch_requires_both_high: true
+    mismatch_confidence_threshold: 0.6
+  learned:
+    model_path: models/fusion_lr.pkl
+    features:
+      - q_quality_overall
+      - g_quality_overall
+      - q_blur
+      - g_blur
+      - q_visibility
+      - g_visibility
+      - emb_sim
+      - color_sim
+      - attr_sim
+
+detection:
+  yolo_model: yolov8n.pt
+  conf_threshold: 0.50
+  tracker: bytetrack.yaml
+  person_class_id: 0
+  min_bbox_height: 32
+
+eval:
+  dataset: market1501
+  dataset_root: data/Market-1501
+  seed: 42
+  cache_dir: cache/
+  debug_save_crops: false
+  degradation:
+    blur_kernels: [0, 3, 7, 15]
+    motion_blur_kernels: [0, 9, 15]
+    occlusion_fracs: [0.0, 0.30, 0.50, 0.70]
+    scale_factors: [1.0, 0.5, 0.25]
+    brightness_shifts: [0, -50, 50]
+  ablations:
+    temperatures: [0.5, 1.0, 2.0, 5.0]
+    quality_aggregations: [min, product]
+
+pipeline:
+  target_fps: 10
+  display: true
+  top_k_display: 3
+  draw_quality_bar: true
+  draw_attributes: true
+  draw_color_labels: true
