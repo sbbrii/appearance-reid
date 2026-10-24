@@ -68,10 +68,48 @@ class TestExtractColors:
     def test_output_keys(self):
         crop = _solid_crop((100, 150, 100))
         result = extract_colors(crop, (0.5, 0.25), (0.5, 0.75), _CFG)
-        assert set(result.keys()) == {"upper", "upper_conf", "lower", "lower_conf"}
+        assert {"upper", "upper_conf", "lower", "lower_conf", "sampling_path"}.issubset(result.keys())
 
     def test_conf_in_bounds(self):
         crop = _solid_crop((80, 80, 200))
         result = extract_colors(crop, (0.5, 0.25), (0.5, 0.75), _CFG)
         assert 0.0 <= result["upper_conf"] <= 1.0
         assert 0.0 <= result["lower_conf"] <= 1.0
+
+    def test_synthetic_red_top_blue_bottom(self):
+        """
+        Synthetic image (red top, blue bottom).
+        Tests both model points and fallback paths.
+        """
+        # 160 height x 80 width, BGR image
+        h, w = 160, 80
+        crop = np.zeros((h, w, 3), dtype=np.uint8)
+        # Top half: Red in BGR
+        crop[:h // 2, :] = [40, 48, 174]
+        # Bottom half: Blue in BGR
+        crop[h // 2:, :] = [168, 93, 45]
+
+        # 1. Model points path
+        res_model = extract_colors(crop, upper_xy=(0.5, 0.25), lower_xy=(0.5, 0.75), cfg=_CFG)
+        assert res_model["sampling_path"] == "model points"
+        assert res_model["upper"] == "red"
+        assert res_model["lower"] == "blue"
+        assert res_model["upper_conf"] > 0.5
+        assert res_model["lower_conf"] > 0.5
+
+        # 2. Fallback path (None coords)
+        res_fallback = extract_colors(crop, upper_xy=None, lower_xy=None, cfg=_CFG)
+        assert res_fallback["sampling_path"] == "fallback"
+        assert res_fallback["upper"] == "red"
+        assert res_fallback["lower"] == "blue"
+        assert res_fallback["upper_conf"] > 0.5
+        assert res_fallback["lower_conf"] > 0.5
+
+    def test_out_of_bounds_clipping(self):
+        """Coordinates outside [0, 1] must be clipped without error."""
+        crop = np.full((100, 50, 3), [168, 93, 45], dtype=np.uint8)  # Blue
+        # Pass coordinates out of bounds (-0.2, 1.4)
+        res = extract_colors(crop, upper_xy=(-0.2, 0.5), lower_xy=(1.4, 0.5), cfg=_CFG)
+        assert res["sampling_path"] == "model points"
+        assert res["upper"] == "blue"
+        assert res["lower"] == "blue"
