@@ -111,6 +111,8 @@ class Pipeline:
 
     def _lazy_init(self, camera_id: str = "cam0") -> None:
         """Initialise all components (deferred to avoid import cost at import time)."""
+        if self._extractor is not None:
+            return
         from src.embed import EmbeddingExtractor
         from src.detect_track import DetectionTracker
         from src.gallery import GalleryIndex
