@@ -107,6 +107,7 @@ def run_evaluation(
     methods: list,
     results_dir: Path,
     ablation_mode: str = "",
+    clean_only: bool = False,
 ) -> list:
     """
     Core evaluation loop.
@@ -173,6 +174,9 @@ def run_evaluation(
             # For pure embedding method, iterate degradation on embedding distances
             for q_idx, q_item in enumerate(query_items):
                 pass  # degraded embeddings computed below for all methods together
+
+        if clean_only:
+            continue
 
         # -- Degradation loop --
         cond_pairs = apply_all_conditions(query_items[0]["crop_bgr"], cfg["eval"])
@@ -278,6 +282,7 @@ def main() -> None:
     parser.add_argument("--config", default="configs/default.yaml")
     parser.add_argument("--tag", default="eval", help="Output file tag")
     parser.add_argument("--synthetic", action="store_true", help="Use synthetic dataset")
+    parser.add_argument("--clean-only", action="store_true", help="Evaluate only clean condition (M1 baseline)")
     parser.add_argument("--ablations", default="",
                         help="Ablation mode: temperatures | quality_agg | remove_quality | ...")
     args = parser.parse_args()
@@ -289,7 +294,9 @@ def main() -> None:
     results_dir = Path("results")
     if args.synthetic:
         cfg["eval"]["allow_synthetic"] = True
-    results = run_evaluation(cfg, methods, results_dir, ablation_mode=args.ablations)
+    results = run_evaluation(cfg, methods, results_dir, ablation_mode=args.ablations,
+        clean_only=args.clean_only,
+    )
     _write_results(results, results_dir, args.tag)
 
 

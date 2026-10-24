@@ -93,43 +93,42 @@ def load_market1501(cfg: dict) -> dict:
       gallery : list of (img_path, pid, camid)
       train   : list of (img_path, pid, camid)
     """
-    dataset_root = Path(cfg["dataset_root"])
-    if not dataset_root.exists():
+    # Check possible roots
+    market_found = False
+    root_to_use = "data"
+    for cand in [Path(cfg.get("dataset_root", "data/market1501")), Path("data/market1501"), Path("data/Market-1501")]:
+        if cand.exists():
+            market_found = True
+            break
+
+    if not market_found:
         if cfg.get("allow_synthetic", True):
-            logger.info("Market-1501 not found at %s. Using synthetic dataset for verification.", dataset_root)
+            logger.info("Market-1501 not found. Using synthetic dataset for verification.")
             return create_synthetic_dataset(Path("data/synthetic_market1501"))
         logger.error(
-            "Market-1501 dataset not found at: %s\n"
+            "Market-1501 dataset not found.\n"
             "Download from: %s",
-            dataset_root, MARKET1501_DOWNLOAD_URL,
+            MARKET1501_DOWNLOAD_URL,
         )
         sys.exit(1)
 
     try:
-        import torchreid
-    except ImportError as exc:
-        raise ImportError(
-            "pyppbox-torchreid not installed.  Run: pip install pyppbox-torchreid"
-        ) from exc
+        from torchreid.reid.data.datasets.image import Market1501
+    except ImportError:
+        try:
+            from pyppbox_torchreid.data.datasets.image import Market1501
+        except ImportError as exc:
+            raise ImportError("torchreid not installed.") from exc
 
     import warnings
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        dm = torchreid.data.ImageDataManager(
-            root=str(dataset_root.parent),
-            sources="market1501",
-            height=256,
-            width=128,
-            batch_size_train=32,
-            batch_size_test=100,
-            workers=0,
-        )
+        ds = Market1501(root=root_to_use)
 
-    dataset = dm.dataset
     return {
-        "query": dataset.query,
-        "gallery": dataset.gallery,
-        "train": dataset.train,
+        "query": [(item[0], item[1], item[2]) for item in ds.query],
+        "gallery": [(item[0], item[1], item[2]) for item in ds.gallery],
+        "train": [(item[0], item[1], item[2]) for item in ds.train],
     }
 
 

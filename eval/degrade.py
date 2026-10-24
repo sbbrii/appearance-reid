@@ -5,6 +5,7 @@ Applied to QUERY images only.  Gallery images are kept clean.
 Each transform is a pure function: (bgr_crop, **params) -> bgr_crop.
 """
 from __future__ import annotations
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -28,31 +29,146 @@ def motion_blur(crop: np.ndarray, kernel_size: int) -> np.ndarray:
     return cv2.filter2D(crop, -1, kernel)
 
 
+_DONOR_POOL_CACHE = None
+
+
+def get_donor_pool() -> list:
+    global _DONOR_POOL_CACHE
+    if _DONOR_POOL_CACHE is None:
+        cands = [
+            Path("data/market1501/Market-1501-v15.09.15/bounding_box_train"),
+            Path("data/market1501/bounding_box_train"),
+            Path("data/market1501/Market-1501-v15.09.15/bounding_box_test"),
+        ]
+        for c in cands:
+            if c.exists():
+                _DONOR_POOL_CACHE = [str(p) for p in c.glob("*.jpg")]
+                break
+        if not _DONOR_POOL_CACHE:
+            _DONOR_POOL_CACHE = []
+    return _DONOR_POOL_CACHE
+
+
+def generate_occluder_patch(
+    crop: np.ndarray,
+    occ_h: int,
+    occ_w: int,
+    occluder_type: str,
+    donor_pool: list | None,
+    rng: np.random.RandomState,
+) -> np.ndarray:
+    """Generate occluder patch for (a) donor_crop, (b) solid_gray, or (c) smooth_block."""
+    if occluder_type == "donor_crop":
+        pool = donor_pool or get_donor_pool()
+        if pool:
+            donor_path = pool[rng.randint(len(pool))]
+            donor_img = cv2.imread(donor_path)
+            if donor_img is not None and donor_img.size > 0:
+                dh, dw = donor_img.shape[:2]
+                if dh >= occ_h and dw >= occ_w:
+                    dy = rng.randint(0, dh - occ_h + 1)
+                    dx = rng.randint(0, dw - occ_w + 1)
+                    return donor_img[dy : dy + occ_h, dx : dx + occ_w].copy()
+                else:
+                    return cv2.resize(donor_img, (occ_w, occ_h), interpolation=cv2.INTER_LINEAR)
+        # Fallback to solid gray if donor pool unavailable
+        occluder_type = "solid_gray"
+
+    if occluder_type == "solid_gray":
+        gray_val = rng.choice([128, 100, 70, int(crop.mean())])
+        return np.full((occ_h, occ_w, 3), gray_val, dtype=np.uint8)
+
+    elif occluder_type == "smooth_block":
+        c1 = rng.randint(40, 220, size=(3,), dtype=np.int16)
+        c2 = rng.randint(40, 220, size=(3,), dtype=np.int16)
+        if rng.rand() > 0.5:
+            alpha = np.linspace(0, 1, occ_w)[None, :, None]
+        else:
+            alpha = np.linspace(0, 1, occ_h)[:, None, None]
+        patch = (c1 * (1.0 - alpha) + c2 * alpha).clip(0, 255).astype(np.uint8)
+        k = max(3, (min(occ_h, occ_w) // 4) * 2 + 1)
+        return cv2.GaussianBlur(patch, (k, k), 0)
+    else:
+        raise ValueError(f"Unknown occluder type: {occluder_type}")
+
+
 def random_occlusion(
     crop: np.ndarray,
     frac: float,
-    seed: int = 42,
-) -> np.ndarray:
+    occluder_type: str = "mix",
+    donor_pool: list | None = None,
+    seed: int | None = None,
+    return_meta: bool = False,
+) -> np.ndarray | tuple:
     """
     Occlude a random rectangular region covering `frac` of the crop area.
 
-    Occluded pixels are set to mean colour (less aggressive than black).
+    Occluder types:
+      - 'donor_crop': patch pasted from a different image (simulates another pedestrian)
+      - 'solid_gray': solid mean-gray or dark-gray rectangle
+      - 'smooth_block': smooth low-frequency color block
+      - 'mix': equal probability mix of the three types above
+
+    Guarantees measured area is within 2 percentage points of target frac.
     """
     if frac <= 0:
-        return crop
+        if return_meta:
+            return crop.copy(), 0.0, "none"
+        return crop.copy()
+
     h, w = crop.shape[:2]
-    area = h * w * frac
+    total_area = h * w
+    target_area = int(round(total_area * frac))
+
+    if seed is None:
+        h_idx = [0, h // 4, h // 2, 3 * h // 4, h - 1]
+        w_idx = [0, w // 4, w // 2, 3 * w // 4, w - 1]
+        sample_bytes = crop[np.ix_(h_idx, w_idx)].tobytes()
+        seed = (hash(sample_bytes) + int(frac * 10000)) & 0xFFFFFFFF
     rng = np.random.RandomState(seed)
-    occ_h = int(np.sqrt(area * (h / w)))
-    occ_w = int(area / max(occ_h, 1))
-    occ_h = min(occ_h, h)
-    occ_w = min(occ_w, w)
-    y0 = rng.randint(0, max(1, h - occ_h))
-    x0 = rng.randint(0, max(1, w - occ_w))
+
+    # Constrain width and height so neither spans full dimension (<= 0.88 * w, <= 0.88 * h)
+    max_w_allowed = min(w - 2, max(2, int(0.88 * w)))
+    max_h_allowed = min(h - 2, max(2, int(0.88 * h)))
+
+    min_w = max(2, int(round(target_area / max_h_allowed)))
+    max_w = min(max_w_allowed, int(round(target_area / 2)))
+
+    if min_w > max_w:
+        min_w = max(1, int(round(np.sqrt(target_area * (w / h)))))
+        max_w = min(w - 1, int(round(np.sqrt(target_area * (w / h)))))
+        min_w = min(min_w, max_w)
+
+    occ_w = rng.randint(min_w, max_w + 1) if max_w >= min_w else min_w
+    occ_h = int(round(target_area / max(occ_w, 1)))
+
+    occ_h = min(max(1, occ_h), h - 1)
+    occ_w = min(max(1, occ_w), w - 1)
+
+    # Measured area check
+    measured_area = (occ_h * occ_w) / total_area
+    assert abs(measured_area - frac) <= 0.02, (
+        f"Measured area {measured_area:.4f} exceeds 2 points from target {frac:.4f}"
+    )
+
+    y0 = rng.randint(0, max(1, h - occ_h + 1))
+    x0 = rng.randint(0, max(1, w - occ_w + 1))
+
+    if occluder_type == "mix":
+        chosen_type = rng.choice(["donor_crop", "solid_gray", "smooth_block"])
+    else:
+        chosen_type = occluder_type
+
+    patch = generate_occluder_patch(crop, occ_h, occ_w, chosen_type, donor_pool, rng)
+
     out = crop.copy()
-    mean_col = crop.mean(axis=(0, 1)).astype(np.uint8)
-    out[y0:y0 + occ_h, x0:x0 + occ_w] = mean_col
+    out[y0 : y0 + occ_h, x0 : x0 + occ_w] = patch
+
+    if return_meta:
+        return out, measured_area, chosen_type
     return out
+
+
 
 
 def low_resolution(crop: np.ndarray, scale_factor: float) -> np.ndarray:
