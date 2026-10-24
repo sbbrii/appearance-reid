@@ -1,160 +1,220 @@
 # SAFEPASS — Appearance + Quality-Aware Fusion Module
 
-> **B.Tech Capstone / Research Project:** Multi-modal Person Re-Identification for CCTV Missing-Person Search.  
-> **Module Scope:** OSNet Re-ID embeddings, body quality estimation, OpenVINO attribute extraction, CIELAB color classification, FAISS gallery index, and quality-aware adaptive fusion re-ranking.
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.14-blue.svg)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Tests: Pytest](https://img.shields.io/badge/tests-70%20passed-green.svg)](tests/)
+
+Multi-modal Person Re-Identification with quality-aware adaptive appearance fusion, persistent multi-embedding identity tracking, and real-time CCTV webcam inference.
 
 ---
 
-## 1. System Architecture & Data Flow
+## Quickstart (Windows PowerShell)
+
+Follow these steps to clone and run the real-time webcam demo with zero external files:
+
+### 1. Clone & Set Up Environment
+
+Open **PowerShell** and run:
+
+```powershell
+# Clone the repository
+git clone https://github.com/sbbrii/appearance-reid.git
+cd appearance-reid
+
+# Create a virtual environment (Python 3.10 - 3.14)
+python -m venv venv
+.\venv\Scripts\Activate.ps1
+
+# Upgrade pip and install PyTorch with CUDA (or CPU)
+# For NVIDIA GPU (CUDA 12.8 / 12.9):
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+# Or for CPU-only:
+# pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+
+# Install pinned dependencies
+pip install -r requirements.txt
+```
+
+### 2. Download Models (One Command)
+
+Download and verify the required neural network weights (OpenVINO attribute model, OSNet Re-ID checkpoint, and YOLOv8n detector):
+
+```powershell
+python scripts/download_models.py
+```
+*All weights are verified with file size and SHA256 checksums before proceeding.*
+
+### 3. Run the Live Webcam Demo
+
+```powershell
+python -m src.pipeline --source 0
+```
+
+#### Camera Selection & Keys
+- **Select Camera**: `--source 0` selects default webcam. If you have multiple webcams (e.g. external USB camera or virtual camera), pass `--source 1` or `--source 2`.
+- **Run on a Video File**: `python -m src.pipeline --source path\to\cctv.mp4`
+- **Interactive Controls**:
+  - `q`: Quit the demo.
+  - `f`: Toggle full-screen display.
+
+#### Expected First-Run Behavior
+1. YOLOv8n detects persons in the scene and ByteTrack assigns a transient `track_id` (`T:X`).
+2. The pipeline collects high-quality crops into an M-frame rolling buffer (`ID:?`).
+3. Once enrolled, the persistent identity engine creates or links to an `ID:X` badge.
+4. If a person leaves the camera frame and returns after several seconds, the system queries the in-memory gallery and re-identifies them with their persistent `ID` based on cosine similarity and multi-modal appearance fusion.
+5. Live FPS, latency breakdown, bounding boxes, dominant upper/lower body colors, and attribute predictions are displayed on the real-time HUD.
+
+---
+
+## Privacy & Data Handling Note
+
+- **In-Memory Only**: All feature embeddings, color descriptors, and gallery indices are stored strictly in volatile RAM for the duration of the process.
+- **No Disk Storage by Default**: No video frames, face crops, or personal recordings are saved to disk unless `--record 1` is explicitly supplied.
+- **Log Hygiene**: Session score logs (`*.csv`, `*.log`) are ignored by version control and must not be committed to GitHub.
+
+---
+
+## System Architecture
 
 ```
                       Video Frame / CCTV Camera / Video File
-                                        │
-                                        ▼
-                         ┌─────────────────────────────┐
-                         │   Detection & Tracking      │
-                         │ YOLOv8n + ByteTrack (CPU/GPU│
-                         └──────────────┬──────────────┘
-                                        │  Crop BGR + Track ID + BBox
-                 ┌──────────────────────┼──────────────────────┐
-                 ▼                      ▼                      ▼
-       ┌──────────────────┐   ┌──────────────────┐   ┌──────────────────┐
-       │     embed.py     │   │  attributes.py   │   │    quality.py    │
-       │ OSNet (fp16 GPU) │   │ OpenVINO IR CPU  │   │ Blur, Visibility,│
-       │ 512-D L2 Embed   │   │ 8 Attributes +   │   │ Size Proxy       │
-       └────────┬─────────┘   │ 2 Color Pts      │   └────────┬─────────┘
-                │             └─────────┬────────┘            │
-                │                       │ Sampling Points     │
-                │             ┌─────────▼────────┐            │
-                │             │     color.py     │            │
-                │             │ CIELAB Centroids │            │
-                │             │ Upper/Lower + Conf│           │
-                │             └─────────┬────────┘            │
-                │                       │                     │
-                └───────────────────────┼─────────────────────┘
-                                        │
-                                  FeatureRecord
-                                        │
-                              ┌─────────▼────────┐
-                              │    gallery.py    │
-                              │ FAISS IndexFlatIP│
-                              │ Top-K Candidates │
-                              └─────────┬────────┘
-                                        │ Top-K Candidates
-                              ┌─────────▼────────┐
-                              │    fusion.py     │
-                              │ Quality-Aware    │
-                              │ Adaptive Re-Rank │
-                              └─────────┬────────┘
-                                        │
-                              ┌─────────▼────────┐
-                              │   pipeline.py    │
-                              │ Display / Stream │
-                              └──────────────────┘
+                                         │
+                                         ▼
+                          ┌─────────────────────────────┐
+                          │   Detection & Tracking      │
+                          │ YOLOv8n + ByteTrack (CPU/GPU)│
+                          └──────────────┬──────────────┘
+                                         │  Crop BGR + Track ID + BBox
+                 ┌───────────────────────┼──────────────────────┐
+                 ▼                       ▼                      ▼
+       ┌──────────────────┐    ┌──────────────────┐   ┌──────────────────┐
+       │     embed.py     │    │  attributes.py   │   │    quality.py    │
+       │ OSNet (fp16 GPU) │    │ OpenVINO IR CPU  │   │ Blur, Visibility,│
+       │ 512-D L2 Embed   │    │ 8 Attributes +   │   │ Size Proxy       │
+       └────────┬─────────┘    │ 2 Color Pts      │   └────────┬─────────┘
+                │              └─────────┬────────┘            │
+                │                        │ Sampling Points     │
+                │              ┌─────────▼────────┐            │
+                │              │     color.py     │            │
+                │              │ CIELAB Centroids │            │
+                │              │ Upper/Lower + Conf│           │
+                │              └─────────┬────────┘            │
+                │                        │                     │
+                └────────────────────────┼─────────────────────┘
+                                         │
+                                    FeatureRecord
+                                         │
+                               ┌─────────▼────────┐
+                               │   identity.py    │
+                               │ Multi-Embedding  │
+                               │ Persistent Bank  │
+                               └─────────┬────────┘
+                                         │
+                               ┌─────────▼────────┐
+                               │    gallery.py    │
+                               │ FAISS IndexFlatIP│
+                               │ Top-K Candidates │
+                               └─────────┬────────┘
+                                         │ Top-K Candidates
+                               ┌─────────▼────────┐
+                               │    fusion.py     │
+                               │ Quality-Aware    │
+                               │ Adaptive Re-Rank │
+                               └─────────┬────────┘
+                                         │
+                               ┌─────────▼────────┐
+                               │   pipeline.py    │
+                               │ Display / HUD    │
+                               └──────────────────┘
 ```
+
+### Module Overview
+
+- **`src/detect_track.py`**: YOLOv8 person detection coupled with ByteTrack association.
+- **`src/embed.py`**: OSNet x1.0 feature extractor producing L2-normalized 512-D appearance embeddings. Supports fp16 GPU autocast and automatic OOM recovery.
+- **`src/identity.py`**: Persistent identity layer maintaining separate `identity_id` from transient `track_id`, an M-frame enrollment buffer, an N-embedding diversity bank with pairwise-cosine redundancy replacement, and ambiguity guards.
+- **`src/quality.py`**: Multi-factor crop quality estimation assessing sharpness (Laplacian variance), visibility (aspect ratio & border proximity), and pixel resolution.
+- **`src/attributes.py`**: Intel OpenVINO inference engine extracting 8 pedestrian attributes (`is_male`, `has_bag`, `has_backpack`, `has_hat`, `has_longsleeves`, `has_longpants`, `has_longhair`, `has_coat_jacket`) and color sampling points.
+- **`src/color.py`**: CIELAB dominant upper/lower color classification with spatial sampling.
+- **`src/gallery.py`**: High-performance in-memory gallery powered by FAISS `IndexFlatIP`.
+- **`src/fusion.py`**: Quality-aware appearance fusion engine implementing baseline cosine, fixed weighting, dynamic softmax gating, and learned logistic calibration.
+- **`src/pipeline.py`**: Live video pipeline integrating capture, inference, overlay rendering, and real-time performance tracking (17+ FPS on RTX 2050).
 
 ---
 
-## 2. Research Core: Quality-Aware Fusion
+## Running Unit Tests
 
-When CCTV queries suffer from blur, occlusion, or low resolution, raw visual embeddings degrade significantly. SAFEPASS implements four fusion methods under identical experimental conditions:
+Run the complete test suite:
 
-1. **`osnet_only` (Baseline A):** Pure cosine similarity on OSNet 512-D L2-normalized vectors.
-2. **`fixed_weight` (Baseline B):** Static weighted linear combination:
-   $$\text{Score} = 0.6 \cdot S_{\text{emb}} + 0.2 \cdot S_{\text{color}} + 0.2 \cdot S_{\text{attr}}$$
-3. **`adaptive_rule` (Proposed Core):** Dynamic softmax gating weighted by aggregated query-gallery quality:
-   $$Q = \min(Q_{\text{query}}, Q_{\text{gallery}})$$
-   $$\mathbf{w} = \text{Softmax}\left(\frac{[w_{\text{emb}} \cdot Q, w_{\text{color}} \cdot (1 - Q), w_{\text{attr}} \cdot (1 - Q)]}{T}\right)$$
-   With mismatch penalties applied when both query and gallery are confident.
-4. **`adaptive_learned`:** Logistic regression model trained on feature vectors $[Q_q, Q_g, \text{blur}_q, \text{blur}_g, \text{vis}_q, \text{vis}_g, S_{\text{emb}}, S_{\text{color}}, S_{\text{attr}}]$.
-
----
-
-## 3. Directory Layout
-
-```
-safepass_appearance/
-├── configs/
-│   └── default.yaml         # Central configuration (all parameters tuned here)
-├── docs/
-│   └── ATTRIBUTION.md       # Clean attribution for all ported concepts & model licenses
-├── models/
-│   └── FP32/
-│       ├── person-attributes-recognition-crossroad-0230.xml
-│       └── person-attributes-recognition-crossroad-0230.bin
-├── src/
-│   ├── detect_track.py      # YOLOv8 + ByteTrack multi-person tracking
-│   ├── embed.py             # OSNet feature extractor (GPU fp16 / CPU)
-│   ├── quality.py           # Body quality estimator (blur, visibility, size)
-│   ├── attributes.py        # OpenVINO person-attributes inference
-│   ├── color.py             # CIELAB color centroid mapping
-│   ├── record.py            # FeatureRecord dataclass & serialization
-│   ├── gallery.py           # FAISS IndexFlatIP + metadata gallery
-│   ├── fusion.py            # Quality-aware adaptive re-ranking engine
-│   └── pipeline.py          # End-to-end real-time pipeline (17.3 FPS measured)
-├── eval/
-│   ├── datasets.py          # Market-1501 dataset loader
-│   ├── degrade.py           # Synthetic degradation harness (blur, occlusion, scale)
-│   ├── metrics.py           # CMC (Rank-1/5/10), mAP, MRR, FAR/FRR
-│   └── run_eval.py          # Comparative evaluation script across all methods
-├── tests/
-│   ├── test_quality.py      # Quality estimator unit tests
-│   ├── test_color.py        # Color classifier unit tests
-│   ├── test_metrics.py      # CMC, mAP, MRR metric tests
-│   ├── test_fusion.py       # Fusion gating and ranking tests
-│   └── test_pipeline_modules.py # Live model & pipeline component tests
-└── requirements.txt         # Pinned project dependencies
-```
-
----
-
-## 4. Environment & Quickstart
-
-### Prerequisites
-- Python 3.10+ (tested on Python 3.14)
-- NVIDIA GPU with CUDA support (tested on RTX 2050, CUDA 12.8)
-
-### Run Unit Tests
-```bash
+```powershell
 pytest -v
 ```
-*Current test suite: **54 passed in ~5.7s** (100% pass rate).*
 
-### Download / Verify Models
-Downloads the Intel Open Model Zoo FP32 attribute recognition model (`Apache 2.0`):
-```bash
-python scripts/download_models.py
-```
+All 70 tests across identity banking, quality gating, color spaces, metrics, and fusion ranking will execute.
 
-### Run Real-Time Pipeline
-```bash
-# Live webcam
-python src/pipeline.py --source 0
+---
 
-# Video file
-python src/pipeline.py --source path/to/cctv_video.mp4
-```
+## Offline Evaluation Reproduction (Optional)
 
-### Run Evaluation Harness
-```bash
-# Single method on Market-1501
-python eval/run_eval.py --methods osnet_only --config configs/default.yaml
+> **Note**: Evaluation reproduction is optional and requires the Market-1501 dataset. The trained fusion model (`models/fusion_lr.pkl`) and some benchmark metrics are provisional research artifacts.
 
-# Full comparative ablation study
-python eval/run_eval.py --methods all --ablations all --config configs/default.yaml
+### Dataset Requirement
+The **Market-1501** dataset is not distributed with this repository due to academic research licensing restrictions. To run offline evaluation:
+1. Request access from the [Zheng Lab Market-1501 Project Page](https://zheng-lab.cecs.anu.edu.au/Project/project_reid.html).
+2. Extract the dataset into `data/market1501/` such that `bounding_box_test/` and `query/` subdirectories are present.
+
+### Running Benchmarks
+```powershell
+# Run baseline OSNet evaluation on Market-1501
+python -m eval.run_eval --methods osnet_only --config configs/default.yaml
+
+# Run full comparative study across all fusion formulations
+python -m eval.run_eval --methods all --config configs/default.yaml
 ```
 
 ---
 
-## 5. Performance Benchmark
-Measured on NVIDIA GeForce RTX 2050 (4 GB VRAM) with Python 3.14:
-- **Pipeline Speed:** **17.3 FPS** (exceeds the 10.0 FPS project target)
-- **OSNet Inference:** GPU fp16 batch acceleration
-- **Attribute Inference:** OpenVINO CPU runtime
-- **Gallery Search:** FAISS IndexFlatIP (exact cosine similarity)
+## Directory Structure
+
+```
+appearance-reid/
+├── configs/
+│   └── default.yaml         # Central configuration parameters
+├── data/                    # Dataset directory (Market-1501 placed here for eval)
+├── docs/
+│   └── ATTRIBUTION.md       # Licensing, model origins, and third-party citations
+├── eval/                    # Offline evaluation & degradation test scripts
+│   ├── datasets.py          # Market-1501 loader
+│   ├── degrade.py           # Synthetic blur/occlusion harness
+│   ├── metrics.py           # CMC Rank-1/5/10 and mAP calculators
+│   └── run_eval.py          # Comparative evaluation runner
+├── models/                  # Downloaded model weights (OSNet, OpenVINO IR)
+├── results/                 # Evaluation output plots and metric logs
+├── scripts/
+│   └── download_models.py   # Checksum-verified model download utility
+├── src/                     # Core real-time pipeline and ML modules
+│   ├── attributes.py
+│   ├── color.py
+│   ├── detect_track.py
+│   ├── embed.py
+│   ├── fusion.py
+│   ├── gallery.py
+│   ├── identity.py
+│   ├── pipeline.py
+│   ├── quality.py
+│   └── record.py
+├── tests/                   # Pytest test suite (70 unit tests)
+├── LICENSE                  # MIT License & third-party terms
+├── README.md                # Project documentation & quickstart
+└── requirements.txt         # Pinned python dependencies
+```
 
 ---
 
-## 6. Known Limitations & Clean Out-of-Scope Interfaces
-- **Out of Scope (By Spec):** Face/ArcFace recognition, gait dynamics, camera topology graphs, and web dashboards are intentionally excluded. Modular interfaces (`FeatureRecord` and `rerank()`) are provided for straightforward future plug-in.
-- **Dataset Dependency:** Evaluation scripts require Market-1501 dataset placed under `data/Market-1501/`. If absent, `eval/datasets.py` outputs download instructions and exits safely.
+## License & Attribution
+
+- **SAFEPASS**: Distributed under the [MIT License](LICENSE).
+- **YOLOv8**: Licensed under AGPL-3.0 by Ultralytics.
+- **OSNet Checkpoint**: Distributed under Apache 2.0 / Market-1501 academic research terms.
+- **OpenVINO Attribute Model**: Distributed under Apache 2.0 by Intel Corporation.
+- For complete citations and license texts, see [docs/ATTRIBUTION.md](docs/ATTRIBUTION.md).
